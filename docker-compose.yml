@@ -1,0 +1,92 @@
+# CampusFlow production stack:  docker compose up -d --build
+# Only the web container is published; MongoDB and the API live on a private network.
+name: campusflow
+
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME:?set MONGO_ROOT_USERNAME in .env}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?set MONGO_ROOT_PASSWORD in .env}
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet -u \"$$MONGO_INITDB_ROOT_USERNAME\" -p \"$$MONGO_INITDB_ROOT_PASSWORD\" --authenticationDatabase admin --eval 'db.adminCommand({ ping: 1 }).ok' | grep -q 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks: [internal]
+
+  backend:
+    image: campusflow-backend:${IMAGE_TAG:-latest}
+    build:
+      context: ./backend
+    restart: unless-stopped
+    init: true
+    environment:
+      NODE_ENV: production
+      PORT: 5000
+      TRUST_PROXY: 1
+      MONGO_URI: mongodb://${MONGO_ROOT_USERNAME}:${MONGO_ROOT_PASSWORD}@mongo:27017/${MONGO_DB:-campusflow}?authSource=admin
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env (32+ chars)}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-8h}
+      QR_SECRET: ${QR_SECRET:?set QR_SECRET in .env (32+ chars, different from JWT_SECRET)}
+      CORS_ORIGIN: ${CORS_ORIGIN:?set CORS_ORIGIN in .env (e.g. https://attendance.example.edu)}
+      ATTENDANCE_THRESHOLD: ${ATTENDANCE_THRESHOLD:-75}
+      ATTENDANCE_TZ: ${ATTENDANCE_TZ:-Asia/Kolkata}
+      QR_ROTATE_SECONDS: ${QR_ROTATE_SECONDS:-30}
+      RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-300}
+      AUTH_RATE_LIMIT_MAX: ${AUTH_RATE_LIMIT_MAX:-10}
+    depends_on:
+      mongo:
+        condition: service_healthy
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    networks: [internal]
+
+  frontend:
+    image: campusflow-frontend:${IMAGE_TAG:-latest}
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: /api
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-80}:8080"
+    depends_on:
+      backend:
+        condition: service_healthy
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    networks: [internal]
+
+  # One-off helper:  docker compose --profile tools run --rm seed
+  seed:
+    image: campusflow-backend:${IMAGE_TAG:-latest}
+    profiles: [tools]
+    command: ["node", "src/seed.js"]
+    environment:
+      NODE_ENV: production
+      MONGO_URI: mongodb://${MONGO_ROOT_USERNAME}:${MONGO_ROOT_PASSWORD}@mongo:27017/${MONGO_DB:-campusflow}?authSource=admin
+      JWT_SECRET: ${JWT_SECRET:?}
+      QR_SECRET: ${QR_SECRET:?}
+      CORS_ORIGIN: ${CORS_ORIGIN:?}
+      SEED_ADMIN_NAME: ${SEED_ADMIN_NAME:-System Admin}
+      SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:?set SEED_ADMIN_EMAIL in .env}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:?set SEED_ADMIN_PASSWORD in .env}
+    depends_on:
+      mongo:
+        condition: service_healthy
+    networks: [internal]
+
+networks:
+  internal:
+
+volumes:
+  mongo_data:
