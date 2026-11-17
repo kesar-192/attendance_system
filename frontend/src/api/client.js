@@ -2,7 +2,11 @@ import axios from 'axios';
 
 export const TOKEN_KEY = 'campusflow.token';
 
-const client = axios.create({ baseURL: import.meta.env.VITE_API_URL || '/api', timeout: 20000 });
+const configuredBaseURL = import.meta.env.VITE_API_URL || '/api';
+const trimmedBaseURL = configuredBaseURL.replace(/\/+$/, '');
+const baseURL = /\/api$/i.test(trimmedBaseURL) ? trimmedBaseURL : `${trimmedBaseURL}/api`;
+
+const client = axios.create({ baseURL, timeout: 20000 });
 
 let onUnauthorized = () => {};
 export const setUnauthorizedHandler = (fn) => {
